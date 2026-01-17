@@ -55,7 +55,7 @@
 </head>
 <body class="bg-slate-50 text-slate-900 font-sans overflow-hidden">
 
-    <!-- 加载提示弹窗 (OCR进行中) -->
+    <!-- 加载提示弹窗 (单张重新OCR进行中) -->
     <div id="loadingOverlay" class="hidden fixed inset-0 bg-black/30 z-[60] flex items-center justify-center backdrop-blur-[2px]">
         <div class="bg-white p-8 rounded-2xl shadow-2xl flex flex-col items-center space-y-4">
             <div class="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
@@ -102,7 +102,7 @@
                 
                 <div>
                     <label class="block text-[10px] font-bold text-slate-500 uppercase mb-1">指示 (Prompt)</label>
-                    <input type="text" id="promptInput" value="图片为日文资料，提取图片中的所有文字，保持排版，使用纯文本格式输出。" 
+                    <input type="text" id="promptInput" value="提取图片中的所有文字，保持排版，使用Markdown格式输出。" 
                            class="w-full px-3 py-2 text-sm border border-slate-300 rounded-md focus:ring-2 focus:ring-indigo-500 outline-none">
                 </div>
 
@@ -200,11 +200,11 @@
                         </button>
                     </div>
                 </div>
-                <!-- 移除了 readonly 属性，使用户可以编辑 -->
+                <!-- 用户可以编辑 -->
                 <textarea id="resultTextArea" class="flex-1 p-8 text-slate-800 leading-relaxed outline-none resize-none font-mono text-[13px] bg-white" placeholder="OCR结果将显示在此处..."></textarea>
             </div>
 
-            <!-- 错误指南覆盖层 -->
+            <!-- 错误指南 -->
             <div id="errorOverlay" class="hidden absolute inset-0 bg-slate-900/90 z-50 flex items-center justify-center p-6 overflow-y-auto">
                 <div class="bg-white rounded-2xl max-w-2xl w-full p-8 shadow-2xl my-auto text-sm">
                     <div class="flex items-center text-red-600 mb-6">
@@ -217,11 +217,11 @@
                         </div>
                     </div>
                     <div class="space-y-4">
-                        <p class="p-3 bg-amber-50 border-l-4 border-amber-400 text-amber-800">CORS 限制已拦截通信。请检查设置：</p>
+                        <p class="p-3 bg-amber-50 border-l-4 border-amber-400 text-amber-800">CORS 限制。请按照以下步骤解决：</p>
                         <div class="grid md:grid-cols-2 gap-4">
                             <div class="p-4 bg-slate-50 rounded-xl border border-slate-200">
                                 <h3 class="font-bold text-indigo-700 mb-2">Windows</h3>
-                                <p class="text-[11px] text-slate-600">退出 Ollama 后，在环境变量 OLLAMA_ORIGINS 中添加 * 并重启。</p>
+                                <p class="text-[11px] text-slate-600">退出 Ollama，环境变量 OLLAMA_ORIGINS 设为 *，重启 Ollama。</p>
                             </div>
                             <div class="p-4 bg-slate-50 rounded-xl border border-slate-200">
                                 <h3 class="font-bold text-indigo-700 mb-2">macOS</h3>
@@ -239,6 +239,7 @@
     </div>
 
     <script>
+        // DOM Elements
         const folderInput = document.getElementById('folderInput');
         const startBtn = document.getElementById('startBtn');
         const saveJsonBtn = document.getElementById('saveJsonBtn');
@@ -255,393 +256,227 @@
         const checkConnBtn = document.getElementById('checkConnBtn');
         const connStatus = document.getElementById('connStatus');
         const errorOverlay = document.getElementById('errorOverlay');
-        const loadingOverlay = document.getElementById('loadingOverlay'); // 加载层
+        const loadingOverlay = document.getElementById('loadingOverlay');
         const copyBtn = document.getElementById('copyBtn');
         const speakBtn = document.getElementById('speakBtn');
         const speakBtnText = document.getElementById('speakBtnText');
         const ttsLangSelect = document.getElementById('ttsLangSelect');
         const ttsRateSelect = document.getElementById('ttsRateSelect');
         const helpBtn = document.getElementById('helpBtn');
-        
-        // 侧边栏相关
         const sidebar = document.getElementById('sidebar');
         const hideSidebarBtn = document.getElementById('hideSidebarBtn');
         const showSidebarBtn = document.getElementById('showSidebarBtn');
-
-        // 调整大小相关
         const leftPane = document.getElementById('leftPane');
         const resizer = document.getElementById('resizer');
         const mainContent = document.getElementById('mainContent');
-
-        // 图片操作相关
         const imageViewport = document.getElementById('imageViewport');
         const controlsInfo = document.getElementById('imageControlsInfo');
 
+        // State
         let filesQueue = [];
         let resultsMap = new Map();
+        let isProcessing = false; // Guard for sequential loop
         const synth = window.speechSynthesis;
         const STORAGE_KEY = 'ollama_ocr_cache';
 
-        // --- 侧边栏开关 ---
-        hideSidebarBtn.onclick = () => {
-            sidebar.classList.add('sidebar-hidden');
-            showSidebarBtn.classList.remove('hidden');
-        };
-        showSidebarBtn.onclick = () => {
-            sidebar.classList.remove('sidebar-hidden');
-            showSidebarBtn.classList.add('hidden');
-        };
+        // --- Sidebar ---
+        hideSidebarBtn.onclick = () => { sidebar.classList.add('sidebar-hidden'); showSidebarBtn.classList.remove('hidden'); };
+        showSidebarBtn.onclick = () => { sidebar.classList.remove('sidebar-hidden'); showSidebarBtn.classList.add('hidden'); };
 
-        // --- 分割调整大小 ---
+        // --- Resizer ---
         let isResizing = false;
-        resizer.onmousedown = (e) => {
-            isResizing = true;
-            resizer.classList.add('active');
-            document.body.style.cursor = 'col-resize';
-        };
-
+        resizer.onmousedown = () => { isResizing = true; resizer.classList.add('active'); document.body.style.cursor = 'col-resize'; };
         window.onmousemove = (e) => {
             if (!isResizing) return;
             const containerRect = mainContent.getBoundingClientRect();
             let newWidth = e.clientX - containerRect.left;
-            const minWidth = 100;
-            const maxWidth = containerRect.width - 100;
-            if (newWidth < minWidth) newWidth = minWidth;
-            if (newWidth > maxWidth) newWidth = maxWidth;
-            const percentage = (newWidth / containerRect.width) * 100;
+            const percentage = (Math.max(100, Math.min(containerRect.width - 100, newWidth)) / containerRect.width) * 100;
             leftPane.style.width = `${percentage}%`;
         };
+        window.onmouseup = () => { if (isResizing) { isResizing = false; resizer.classList.remove('active'); document.body.style.cursor = 'default'; } };
 
-        window.onmouseup = () => {
-            if (isResizing) {
-                isResizing = false;
-                resizer.classList.remove('active');
-                document.body.style.cursor = 'default';
-            }
-        };
-
-        // --- 图片缩放/平移 ---
+        // --- Image Manipulation ---
         let imgState = { scale: 1, x: 0, y: 0, isDragging: false, startX: 0, startY: 0 };
-
-        function updateImageTransform() {
-            previewImage.style.transform = `translate(${imgState.x}px, ${imgState.y}px) scale(${imgState.scale})`;
-        }
-
+        function updateImageTransform() { previewImage.style.transform = `translate(${imgState.x}px, ${imgState.y}px) scale(${imgState.scale})`; }
         imageViewport.onwheel = (e) => {
             e.preventDefault();
-            const zoomSpeed = 0.1;
-            const delta = e.deltaY > 0 ? -zoomSpeed : zoomSpeed;
-            const newScale = Math.max(0.1, Math.min(10, imgState.scale + delta));
-            imgState.scale = newScale;
+            imgState.scale = Math.max(0.1, Math.min(10, imgState.scale + (e.deltaY > 0 ? -0.1 : 0.1)));
             updateImageTransform();
         };
-
-        imageViewport.onmousedown = (e) => {
-            if (e.button !== 0) return;
-            imgState.isDragging = true;
-            imgState.startX = e.clientX - imgState.x;
-            imgState.startY = e.clientY - imgState.y;
-        };
-
-        window.addEventListener('mousemove', (e) => {
-            if (!imgState.isDragging) return;
-            imgState.x = e.clientX - imgState.startX;
-            imgState.y = e.clientY - imgState.startY;
-            updateImageTransform();
-        });
-
-        window.addEventListener('mouseup', () => {
-            imgState.isDragging = false;
-        });
-
+        imageViewport.onmousedown = (e) => { if (e.button === 0) { imgState.isDragging = true; imgState.startX = e.clientX - imgState.x; imgState.startY = e.clientY - imgState.y; } };
+        window.addEventListener('mousemove', (e) => { if (imgState.isDragging) { imgState.x = e.clientX - imgState.startX; imgState.y = e.clientY - imgState.startY; updateImageTransform(); } });
+        window.addEventListener('mouseup', () => imgState.isDragging = false);
         function resetImageState() {
             imgState = { scale: 1, x: 0, y: 0, isDragging: false, startX: 0, startY: 0 };
-            previewImage.style.maxWidth = '100%';
-            previewImage.style.maxHeight = '100%';
-            previewImage.style.width = 'auto';
-            previewImage.style.height = 'auto';
-            updateImageTransform();
+            previewImage.style.maxWidth = '100%'; previewImage.style.maxHeight = '100%'; updateImageTransform();
         }
 
-        // --- 数据存储机制 ---
-
-        function saveToLocalStorage() {
-            const data = Array.from(resultsMap.entries()).map(([name, text]) => ({ img: name, ocrtext: text }));
+        // --- Storage ---
+        function saveCache() {
+            const data = Array.from(resultsMap.entries()).map(([img, text]) => ({ img, ocrtext: text }));
             localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
         }
-
-        function loadFromLocalStorage() {
+        function loadCache() {
             const saved = localStorage.getItem(STORAGE_KEY);
-            if (saved) {
-                try {
-                    const data = JSON.parse(saved);
-                    data.forEach(item => resultsMap.set(item.img, item.ocrtext));
-                } catch (e) { console.error("Cache load failed", e); }
-            }
+            if (saved) { try { JSON.parse(saved).forEach(i => resultsMap.set(i.img, i.ocrtext)); } catch(e){} }
         }
 
-        // --- 编辑自动更新 ---
+        // --- OCR Logic ---
         resultTextArea.oninput = () => {
-            const fileName = currentFileName.innerText;
-            if (fileName && fileName !== "Filename.jpg") {
-                resultsMap.set(fileName, resultTextArea.value);
-                saveToLocalStorage();
-                const items = Array.from(imageList.children);
-                const currentItem = items.find(item => item.querySelector('p').innerText === fileName);
-                if (currentItem) {
-                    const statusLabel = currentItem.querySelector('.status-label');
-                    statusLabel.innerText = "LOADED";
-                    statusLabel.className = "text-[8px] status-label font-bold uppercase text-green-600";
-                }
+            const name = currentFileName.innerText;
+            if (name && name !== "Filename.jpg") {
+                resultsMap.set(name, resultTextArea.value); saveCache();
+                const item = Array.from(imageList.children).find(i => i.querySelector('p').innerText === name);
+                if (item) { const lbl = item.querySelector('.status-label'); lbl.innerText = "LOADED"; lbl.className = "text-[8px] status-label font-bold text-green-600"; }
                 checkBatchComplete();
             }
         };
-
-        // --- OCR & Ollama 处理 ---
-        helpBtn.onclick = () => errorOverlay.classList.remove('hidden');
 
         async function checkConnection(showError = true) {
             const baseUrl = serverUrlInput.value.trim().replace(/\/$/, "");
             connStatus.innerText = "PINGING...";
-            connStatus.className = "text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-600 font-bold";
             try {
-                const response = await fetch(`${baseUrl}/api/tags`, { method: 'GET', mode: 'cors', signal: AbortSignal.timeout(3000) });
-                if (response.ok) {
-                    connStatus.innerText = "ONLINE";
-                    connStatus.className = "text-[10px] px-1.5 py-0.5 rounded bg-green-500 text-white font-bold";
-                    errorOverlay.classList.add('hidden');
-                    return true;
-                }
+                const res = await fetch(`${baseUrl}/api/tags`, { method: 'GET', mode: 'cors', signal: AbortSignal.timeout(3000) });
+                if (res.ok) { connStatus.innerText = "ONLINE"; connStatus.className = "text-[10px] px-1.5 py-0.5 rounded bg-green-500 text-white font-bold"; return true; }
             } catch (err) {}
-            connStatus.innerText = "OFFLINE";
-            connStatus.className = "text-[10px] px-1.5 py-0.5 rounded bg-red-500 text-white font-bold";
+            connStatus.innerText = "OFFLINE"; connStatus.className = "text-[10px] px-1.5 py-0.5 rounded bg-red-500 text-white font-bold";
             if (showError) errorOverlay.classList.remove('hidden');
             return false;
         }
 
-        checkConnBtn.onclick = () => checkConnection();
-
-        folderInput.addEventListener('change', async (e) => {
+        folderInput.onchange = async (e) => {
             const allFiles = Array.from(e.target.files);
             const jsonFile = allFiles.find(f => f.name.toLowerCase().endsWith('.json'));
-            if (jsonFile) {
-                const text = await jsonFile.text();
-                try {
-                    const data = JSON.parse(text);
-                    if (Array.isArray(data)) {
-                        data.forEach(item => {
-                            if (item.img && item.ocrtext) resultsMap.set(item.img, item.ocrtext);
-                        });
-                    }
-                } catch (err) { console.error("JSON parse error", err); }
-            }
-            const files = allFiles
-                .filter(file => /\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(file.name))
-                .sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric: true, sensitivity: 'base'}));
-            if (files.length === 0) return;
-            filesQueue = files;
+            if (jsonFile) { try { JSON.parse(await jsonFile.text()).forEach(i => resultsMap.set(i.img, i.ocrtext)); } catch(e){} }
+            filesQueue = allFiles.filter(f => /\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(f.name)).sort((a,b) => a.name.localeCompare(b.name, undefined, {numeric: true}));
             renderList();
-            statusText.innerText = `加载了 ${files.length} 张图片`;
+            statusText.innerText = `Loaded ${filesQueue.length} items`;
             checkBatchComplete();
-        });
+        };
 
         function renderList() {
             imageList.innerHTML = '';
-            filesQueue.forEach((file, index) => {
+            filesQueue.forEach((file, idx) => {
                 const item = document.createElement('div');
                 item.className = "p-2 bg-white border border-slate-200 rounded-xl cursor-pointer hover:border-indigo-400 transition flex items-center space-x-3 shadow-sm";
-                item.id = `item-${index}`;
-                const thumb = document.createElement('img');
-                thumb.src = URL.createObjectURL(file);
-                thumb.className = "w-10 h-10 object-cover rounded-md flex-shrink-0";
-                const hasResult = resultsMap.has(file.name);
-                const info = document.createElement('div');
-                info.className = "flex-1 min-w-0";
-                info.innerHTML = `
-                    <p class="text-[10px] font-bold truncate text-slate-700">${file.name}</p>
-                    <p class="text-[8px] status-label font-bold uppercase ${hasResult ? 'text-green-600' : 'text-slate-400'}">
-                        ${hasResult ? 'LOADED' : 'Pending'}
-                    </p>
+                item.id = `item-${idx}`;
+                const hasRes = resultsMap.has(file.name);
+                item.innerHTML = `
+                    <img src="${URL.createObjectURL(file)}" class="w-10 h-10 object-cover rounded-md flex-shrink-0">
+                    <div class="flex-1 min-w-0">
+                        <p class="text-[10px] font-bold truncate text-slate-700">${file.name}</p>
+                        <p class="text-[8px] status-label font-bold uppercase ${hasRes ? 'text-green-600' : 'text-slate-400'}">${hasRes ? 'LOADED' : 'Pending'}</p>
+                    </div>
                 `;
-                item.appendChild(thumb);
-                item.appendChild(info);
-                item.onclick = () => showResult(file.name, thumb.src);
+                item.onclick = () => showResult(file.name, item.querySelector('img').src);
                 imageList.appendChild(item);
             });
         }
 
-        function showResult(fileName, imgSrc) {
-            welcomeScreen.classList.add('hidden');
-            previewImage.classList.remove('hidden');
-            controlsInfo.classList.remove('hidden');
-            previewImage.src = imgSrc;
-            currentFileName.innerText = fileName;
-            resultTextArea.value = resultsMap.get(fileName) || "尚未处理此图片。";
-            reOcrBtn.classList.remove('hidden'); // 显示重新 OCR 按钮
-            
-            previewImage.onload = () => {
-                resetImageState();
-                previewImage.style.maxWidth = '100%';
-                previewImage.style.maxHeight = '100%';
-            };
+        function showResult(name, src) {
+            welcomeScreen.classList.add('hidden'); previewImage.classList.remove('hidden'); controlsInfo.classList.remove('hidden');
+            previewImage.src = src; currentFileName.innerText = name;
+            resultTextArea.value = resultsMap.get(name) || "尚未处理此图片。";
+            reOcrBtn.classList.remove('hidden');
+            previewImage.onload = resetImageState;
             stopSpeaking();
         }
 
         function checkBatchComplete() {
-            const allDone = filesQueue.length > 0 && filesQueue.every(f => resultsMap.has(f.name));
-            if (allDone) {
-                saveJsonBtn.classList.remove('hidden');
-                mergeMdBtn.classList.remove('hidden');
-            } else {
-                saveJsonBtn.classList.add('hidden');
-                mergeMdBtn.classList.add('hidden');
-            }
+            const done = filesQueue.length > 0 && filesQueue.every(f => resultsMap.has(f.name));
+            saveJsonBtn.classList.toggle('hidden', !done);
+            mergeMdBtn.classList.toggle('hidden', !done);
         }
 
-        // 重新 OCR 当前图片
-        reOcrBtn.onclick = async () => {
-            const fileName = currentFileName.innerText;
-            const fileIndex = filesQueue.findIndex(f => f.name === fileName);
-            if (fileIndex === -1) return;
+        // --- CORE SEQUENTIAL PROCESSING ---
+        startBtn.onclick = async () => {
+            if (filesQueue.length === 0 || isProcessing) return;
+            if (!await checkConnection(true)) return;
 
-            const isConnected = await checkConnection(true);
-            if (!isConnected) return;
-
-            // 显示加载弹窗
-            loadingOverlay.classList.remove('hidden');
+            isProcessing = true;
+            startBtn.disabled = true;
             reOcrBtn.disabled = true;
 
-            const item = document.getElementById(`item-${fileIndex}`);
-            const statusLabel = item.querySelector('.status-label');
-            const file = filesQueue[fileIndex];
+            // 循环中的 await 确保一张一张按顺序处理
+            for (let i = 0; i < filesQueue.length; i++) {
+                const file = filesQueue[i];
+                if (resultsMap.has(file.name)) continue; // 已经处理过的跳过
 
-            statusText.innerText = `重新处理: ${fileName}`;
+                const item = document.getElementById(`item-${i}`);
+                const lbl = item.querySelector('.status-label');
+                statusText.innerText = `Processing ${i+1}/${filesQueue.length}: ${file.name}`;
+                item.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+                try {
+                    const b64 = await fileToBase64(file);
+                    // 等待当前图片的 OCR 完成
+                    const text = await callOllamaWithRetry(b64, promptInput.value, (msg) => {
+                        lbl.innerText = msg;
+                        item.classList.add('retrying');
+                    });
+                    
+                    item.classList.remove('retrying');
+                    resultsMap.set(file.name, text);
+                    saveCache();
+                    lbl.innerText = "SUCCESS";
+                    lbl.className = "text-[8px] text-green-600 status-label font-bold";
+                    if (currentFileName.innerText === file.name) resultTextArea.value = text;
+                } catch (err) {
+                    item.classList.remove('retrying');
+                    lbl.innerText = "ERROR";
+                    lbl.className = "text-[8px] text-red-600 status-label font-bold";
+                }
+            }
+
+            statusText.innerText = "Batch completed";
+            startBtn.disabled = false;
+            reOcrBtn.disabled = false;
+            isProcessing = false;
+            checkBatchComplete();
+        };
+
+        reOcrBtn.onclick = async () => {
+            const name = currentFileName.innerText;
+            const idx = filesQueue.findIndex(f => f.name === name);
+            if (idx === -1 || isProcessing) return;
+            if (!await checkConnection(true)) return;
+
+            isProcessing = true;
+            loadingOverlay.classList.remove('hidden');
+            const item = document.getElementById(`item-${idx}`);
+            const lbl = item.querySelector('.status-label');
+            const file = filesQueue[idx];
+
             try {
-                const base64 = await fileToBase64(file);
-                const text = await callOllamaWithRetry(base64, promptInput.value, (msg) => {
-                    statusLabel.innerText = msg;
-                    item.classList.add('retrying');
-                });
+                const b64 = await fileToBase64(file);
+                const text = await callOllamaWithRetry(b64, promptInput.value, () => item.classList.add('retrying'));
                 item.classList.remove('retrying');
                 resultsMap.set(file.name, text);
-                saveToLocalStorage();
-                statusLabel.innerText = "SUCCESS";
-                statusLabel.className = "text-[8px] text-green-600 status-label font-bold";
+                saveCache();
+                lbl.innerText = "SUCCESS";
+                lbl.className = "text-[8px] text-green-600 status-label font-bold";
                 resultTextArea.value = text;
             } catch (err) {
-                item.classList.remove('retrying');
-                statusLabel.innerText = "ERROR";
-                statusLabel.className = "text-[8px] text-red-600 status-label font-bold";
+                lbl.innerText = "ERROR";
             } finally {
-                // 隐藏加载弹窗
                 loadingOverlay.classList.add('hidden');
-                reOcrBtn.disabled = false;
-                statusText.innerText = "单体处理完成";
+                isProcessing = false;
                 checkBatchComplete();
             }
         };
 
-        startBtn.onclick = async () => {
-            if (filesQueue.length === 0) return;
-            if (!await checkConnection(true)) return;
-            startBtn.disabled = true;
-            const prompt = promptInput.value;
-            for (let i = 0; i < filesQueue.length; i++) {
-                const file = filesQueue[i];
-                if (resultsMap.has(file.name)) continue;
-                const item = document.getElementById(`item-${i}`);
-                const statusLabel = item.querySelector('.status-label');
-                statusText.innerText = `处理中 ${i+1}/${filesQueue.length}`;
-                item.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-                try {
-                    const base64 = await fileToBase64(file);
-                    const text = await callOllamaWithRetry(base64, prompt, (msg) => {
-                        statusLabel.innerText = msg;
-                        item.classList.add('retrying');
-                    });
-                    item.classList.remove('retrying');
-                    resultsMap.set(file.name, text);
-                    saveToLocalStorage();
-                    statusLabel.innerText = "SUCCESS";
-                    statusLabel.className = "text-[8px] text-green-600 status-label font-bold";
-                    if (currentFileName.innerText === file.name) resultTextArea.value = text;
-                } catch (err) {
-                    item.classList.remove('retrying');
-                    statusLabel.innerText = "ERROR";
-                    statusLabel.className = "text-[8px] text-red-600 status-label font-bold";
-                }
-            }
-            statusText.innerText = "处理完成";
-            startBtn.disabled = false;
-            checkBatchComplete();
-        };
-
-        // 保存本地 (JSON)
-        saveJsonBtn.onclick = () => {
-            const data = filesQueue.map(f => ({
-                img: f.name,
-                ocrtext: resultsMap.get(f.name) || ""
-            }));
-            const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = 'ocr_results.json';
-            a.click();
-            URL.revokeObjectURL(url);
-        };
-
-        // 合并导出 MD (不包含图片名)
-        mergeMdBtn.onclick = () => {
-            const combinedContent = filesQueue.map(f => {
-                return resultsMap.get(f.name) || "";
-            }).join('\n\n---\n\n');
-            const blob = new Blob([combinedContent], { type: 'text/markdown' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = 'ocr_combined_results.md';
-            a.click();
-            URL.revokeObjectURL(url);
-        };
-
-        function stopSpeaking() {
-            if (synth.speaking) synth.cancel();
-            speakBtnText.innerText = "朗读";
-            speakBtn.className = speakBtn.className.replace('bg-red-50 text-red-600', 'bg-emerald-50 text-emerald-600');
-        }
-
-        speakBtn.onclick = () => {
-            if (synth.speaking) { stopSpeaking(); return; }
-            const text = resultTextArea.value;
-            if (!text || text.startsWith("尚未处理") || text.startsWith("尚未处理此图片")) return;
-            const utterance = new SpeechSynthesisUtterance(text);
-            utterance.lang = ttsLangSelect.value;
-            utterance.rate = parseFloat(ttsRateSelect.value);
-            utterance.onstart = () => {
-                speakBtnText.innerText = "停止";
-                speakBtn.className = speakBtn.className.replace('bg-emerald-50 text-emerald-600', 'bg-red-50 text-red-600');
-            };
-            utterance.onend = stopSpeaking;
-            synth.speak(utterance);
-        };
-
-        async function callOllamaWithRetry(base64Image, prompt, onRetry) {
-            const maxRetries = 3;
-            for (let attempt = 0; attempt <= maxRetries; attempt++) {
-                try {
-                    return await callOllamaOCR(base64Image, prompt);
-                } catch (err) {
-                    if (attempt === maxRetries) throw err;
-                    onRetry(`RETRY (${attempt+1})`);
-                    await new Promise(r => setTimeout(r, 1500 * (attempt + 1)));
-                }
+        // --- Helpers ---
+        async function callOllamaWithRetry(img, prompt, onRetry) {
+            const delays = [1500, 3000, 6000];
+            for (let i = 0; i <= 3; i++) {
+                try { return await callOllamaOCR(img, prompt); } 
+                catch (e) { if (i === 3) throw e; onRetry(`RETRY ${i+1}`); await new Promise(r => setTimeout(r, delays[i])); }
             }
         }
 
         async function callOllamaOCR(base64Image, prompt) {
             const baseUrl = serverUrlInput.value.trim().replace(/\/$/, "");
-            const response = await fetch(`${baseUrl}/api/chat`, {
+            const res = await fetch(`${baseUrl}/api/chat`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 mode: 'cors',
@@ -651,30 +486,37 @@
                     stream: false
                 })
             });
-            const data = await response.json();
-            return data.message.content;
+            return (await res.json()).message.content;
         }
 
-        function fileToBase64(file) {
-            return new Promise((resolve) => {
-                const reader = new FileReader();
-                reader.onload = () => resolve(reader.result.split(',')[1]);
-                reader.readAsDataURL(file);
-            });
-        }
+        function fileToBase64(file) { return new Promise(r => { const reader = new FileReader(); reader.onload = () => r(reader.result.split(',')[1]); reader.readAsDataURL(file); }); }
 
-        copyBtn.onclick = () => {
-            resultTextArea.select();
-            document.execCommand('copy');
-            const old = copyBtn.innerText;
-            copyBtn.innerText = "OK!";
-            setTimeout(() => copyBtn.innerText = old, 2000);
+        // --- Exports ---
+        saveJsonBtn.onclick = () => {
+            const blob = new Blob([JSON.stringify(filesQueue.map(f => ({ img: f.name, ocrtext: resultsMap.get(f.name) || "" })), null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a'); a.href = url; a.download = 'ocr_results.json'; a.click(); URL.revokeObjectURL(url);
         };
 
-        window.onload = () => {
-            loadFromLocalStorage();
-            checkConnection(false);
+        mergeMdBtn.onclick = () => {
+            const blob = new Blob([filesQueue.map(f => resultsMap.get(f.name) || "").join('\n\n---\n\n')], { type: 'text/markdown' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a'); a.href = url; a.download = 'ocr_combined_results.md'; a.click(); URL.revokeObjectURL(url);
         };
+
+        // --- TTS & Copy ---
+        function stopSpeaking() { if (synth.speaking) synth.cancel(); speakBtnText.innerText = "朗读"; speakBtn.className = speakBtn.className.replace('bg-red-50 text-red-600', 'bg-emerald-50 text-emerald-600'); }
+        speakBtn.onclick = () => {
+            if (synth.speaking) { stopSpeaking(); return; }
+            const text = resultTextArea.value; if (!text || text.startsWith("尚未处理")) return;
+            const utt = new SpeechSynthesisUtterance(text); utt.lang = ttsLangSelect.value; utt.rate = parseFloat(ttsRateSelect.value);
+            utt.onstart = () => { speakBtnText.innerText = "停止"; speakBtn.className = speakBtn.className.replace('bg-emerald-50 text-emerald-600', 'bg-red-50 text-red-600'); };
+            utt.onend = stopSpeaking; synth.speak(utt);
+        };
+
+        copyBtn.onclick = () => { resultTextArea.select(); document.execCommand('copy'); const old = copyBtn.innerText; copyBtn.innerText = "OK!"; setTimeout(() => copyBtn.innerText = old, 2000); };
+
+        window.onload = () => { loadCache(); checkConnection(false); };
     </script>
 </body>
 </html>
