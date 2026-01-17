@@ -1,0 +1,680 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ollama OCR フォルダ処理ツール</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .sidebar-height { height: calc(100vh - 280px); }
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+        @keyframes pulse-blue {
+            0%, 100% { background-color: rgba(191, 219, 254, 1); }
+            50% { background-color: rgba(147, 197, 253, 1); }
+        }
+        .retrying { animation: pulse-blue 2s infinite; }
+        
+        /* 调整条样式 */
+        #resizer {
+            width: 4px;
+            cursor: col-resize;
+            background-color: #e2e8f0;
+            transition: background-color 0.2s;
+        }
+        #resizer:hover, #resizer.active {
+            background-color: #6366f1;
+        }
+
+        /* 图片容器样式 */
+        #imageViewport {
+            cursor: grab;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background-color: #f1f5f9;
+        }
+        #imageViewport:active { cursor: grabbing; }
+        #previewImage {
+            transition: transform 0.1s ease-out;
+            transform-origin: center;
+            max-width: none;
+        }
+
+        /* 侧边栏动画 */
+        #sidebar {
+            transition: transform 0.3s ease-in-out, width 0.3s ease-in-out;
+        }
+        .sidebar-hidden {
+            width: 0 !important;
+            transform: translateX(-100%);
+            overflow: hidden;
+        }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-900 font-sans overflow-hidden">
+
+    <!-- 加载提示弹窗 (OCR进行中) -->
+    <div id="loadingOverlay" class="hidden fixed inset-0 bg-black/30 z-[60] flex items-center justify-center backdrop-blur-[2px]">
+        <div class="bg-white p-8 rounded-2xl shadow-2xl flex flex-col items-center space-y-4">
+            <div class="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
+            <p class="text-slate-700 font-bold text-lg">OCR中，请稍后...</p>
+        </div>
+    </div>
+
+    <!-- 侧边栏显示按钮 (仅在隐藏时) -->
+    <button id="showSidebarBtn" class="fixed top-4 left-4 z-50 bg-white border border-slate-200 shadow-lg rounded-full p-2 text-indigo-600 hover:bg-slate-50 hidden">
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" /></svg>
+    </button>
+
+    <div class="flex h-screen w-screen overflow-hidden">
+        <!-- 左侧侧边栏 -->
+        <div id="sidebar" class="w-80 bg-white border-r border-slate-200 flex flex-col shadow-sm z-30 flex-shrink-0">
+            <div class="p-4 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
+                <h1 class="text-xl font-bold text-indigo-600 flex items-center">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+                    Ollama OCR
+                </h1>
+                <button id="hideSidebarBtn" class="text-slate-400 hover:text-indigo-600 transition">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 19l-7-7 7-7m8 14l-7-7 7-7" /></svg>
+                </button>
+            </div>
+            
+            <div class="p-4 flex-1 flex flex-col space-y-3 overflow-y-auto overflow-x-hidden">
+                <div>
+                    <div class="flex justify-between items-center mb-1">
+                        <label class="block text-[10px] font-bold text-slate-500 uppercase">Ollama Server URL</label>
+                        <span id="connStatus" class="text-[10px] px-1.5 py-0.5 rounded bg-slate-200 text-slate-600 font-bold">未连接</span>
+                    </div>
+                    <div class="flex space-x-2">
+                        <input type="text" id="serverUrlInput" value="http://127.0.0.1:11434" 
+                               class="flex-1 px-3 py-2 text-sm border border-slate-300 rounded-md focus:ring-2 focus:ring-indigo-500 outline-none font-mono min-w-0">
+                        <button id="checkConnBtn" class="px-2 py-1 text-xs bg-slate-200 hover:bg-slate-300 rounded transition shrink-0">测试</button>
+                    </div>
+                </div>
+
+                <div>
+                    <label class="block text-[10px] font-bold text-slate-500 uppercase mb-1">选择图片文件夹 (自动识别JSON)</label>
+                    <input type="file" id="folderInput" webkitdirectory directory multiple 
+                           class="block w-full text-[11px] text-slate-500 file:mr-3 file:py-1.5 file:px-3 file:rounded file:border-0 file:text-xs file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 cursor-pointer">
+                </div>
+                
+                <div>
+                    <label class="block text-[10px] font-bold text-slate-500 uppercase mb-1">指示 (Prompt)</label>
+                    <input type="text" id="promptInput" value="图片为日文资料，提取图片中的所有文字，保持排版，使用纯文本格式输出。" 
+                           class="w-full px-3 py-2 text-sm border border-slate-300 rounded-md focus:ring-2 focus:ring-indigo-500 outline-none">
+                </div>
+
+                <!-- 朗读设置 -->
+                <div>
+                    <label class="block text-[10px] font-bold text-slate-500 uppercase mb-1">朗读设置 (语言 / 语速)</label>
+                    <div class="flex space-x-2">
+                        <select id="ttsLangSelect" class="flex-1 px-3 py-2 text-sm border border-slate-300 rounded-md focus:ring-2 focus:ring-indigo-500 outline-none bg-white font-medium text-indigo-600">
+                            <option value="ja-JP" selected>日本語 (JA)</option>
+                            <option value="zh-CN">中文 (ZH)</option>
+                            <option value="en-US">English (EN)</option>
+                            <option value="ko-KR">한국어 (KO)</option>
+                        </select>
+                        <select id="ttsRateSelect" class="w-24 px-3 py-2 text-sm border border-slate-300 rounded-md focus:ring-2 focus:ring-indigo-500 outline-none bg-white font-medium text-emerald-600">
+                            <option value="1.0" selected>1.0x</option>
+                            <option value="1.5">1.5x</option>
+                            <option value="1.75">1.75x</option>
+                            <option value="2.0">2.0x</option>
+                            <option value="2.5">2.5x</option>
+                            <option value="3.0">3.0x</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="flex flex-col space-y-2 pt-2">
+                    <button id="startBtn" class="w-full bg-indigo-600 text-white py-2.5 rounded-md font-bold hover:bg-indigo-700 shadow-md shadow-indigo-100 transition disabled:bg-slate-300">
+                        开始一括OCR处理
+                    </button>
+                    <!-- 保存本地按钮 -->
+                    <button id="saveJsonBtn" class="w-full bg-red-600 text-white py-2.5 rounded-md font-bold hover:bg-red-700 shadow-md shadow-red-100 transition hidden">
+                        保存本地 (JSON)
+                    </button>
+                    <!-- 合并导出 MD 按钮 -->
+                    <button id="mergeMdBtn" class="w-full bg-slate-700 text-white py-2.5 rounded-md font-bold hover:bg-slate-800 shadow-md shadow-slate-100 transition hidden">
+                        合并所有文本并导出 (.md)
+                    </button>
+                </div>
+
+                <div id="imageList" class="flex-1 overflow-y-auto p-1 space-y-2">
+                    <p class="text-center text-slate-400 mt-10 text-sm">请选择文件夹</p>
+                </div>
+            </div>
+            
+            <div class="p-4 border-t border-slate-100 bg-white flex justify-between items-center shrink-0">
+                <div class="text-[10px] text-slate-400 font-bold uppercase tracking-tight">
+                    状态: <span id="statusText" class="text-slate-600">READY</span>
+                </div>
+                <button id="helpBtn" class="text-indigo-500 hover:text-indigo-700">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                </button>
+            </div>
+        </div>
+
+        <!-- 主内容区域 (左右分割) -->
+        <div id="mainContent" class="flex-1 flex overflow-hidden relative">
+            
+            <div id="welcomeScreen" class="absolute inset-0 z-20 flex flex-col items-center justify-center bg-slate-100 text-slate-400 space-y-4">
+                <div class="p-8 bg-white rounded-3xl shadow-xl flex flex-col items-center">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-16 w-16 mb-4 text-indigo-200" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.587-1.587a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
+                    <h3 class="text-slate-600 font-bold text-lg text-center">准备就绪</h3>
+                    <p class="text-slate-400 text-sm">选择图片以开始浏览或编辑结果</p>
+                </div>
+            </div>
+
+            <!-- 左窗格: 图片预览 -->
+            <div id="leftPane" class="flex flex-col bg-slate-200 overflow-hidden" style="width: 50%;">
+                <div id="imageViewport" class="flex-1 relative">
+                    <img id="previewImage" src="" alt="Preview" class="hidden">
+                    <!-- 操作指南 -->
+                    <div id="imageControlsInfo" class="absolute bottom-4 left-4 bg-black/50 text-white text-[10px] px-2 py-1 rounded backdrop-blur hidden">
+                        滚轮: 缩放 / 拖拽: 移动
+                    </div>
+                </div>
+            </div>
+
+            <!-- 调整条 -->
+            <div id="resizer"></div>
+
+            <!-- 右窗格: 文本结果 -->
+            <div id="rightPane" class="flex flex-col bg-white overflow-hidden" style="flex: 1;">
+                <div class="px-5 py-3.5 bg-slate-50 border-b border-slate-200 flex justify-between items-center shrink-0">
+                    <div class="flex items-center space-x-2 overflow-hidden">
+                        <span class="w-2 h-2 bg-green-500 rounded-full animate-pulse flex-shrink-0"></span>
+                        <span class="text-sm font-black text-slate-700 font-mono tracking-tight truncate max-w-[120px] sm:max-w-xs" id="currentFileName">Filename.jpg</span>
+                        <!-- 重新 OCR 按钮 -->
+                        <button id="reOcrBtn" class="text-[10px] font-bold text-amber-600 bg-amber-50 px-2 py-1 rounded border border-amber-100 hover:bg-amber-100 transition shrink-0 hidden">重新OCR</button>
+                    </div>
+                    <div class="flex items-center space-x-2 flex-shrink-0">
+                        <button id="speakBtn" class="flex items-center text-[11px] font-black uppercase tracking-widest text-emerald-600 bg-emerald-50 px-4 py-2 rounded-lg hover:bg-emerald-100 transition border border-emerald-100">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3 mr-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" /></svg>
+                            <span id="speakBtnText" class="hidden sm:inline">朗读</span>
+                        </button>
+                        <button id="copyBtn" class="text-[11px] font-black uppercase tracking-widest text-indigo-600 bg-indigo-50 px-4 py-2 rounded-lg hover:bg-indigo-100 transition border border-indigo-100">
+                            <span class="hidden sm:inline">复制</span><span class="sm:hidden">COPY</span>
+                        </button>
+                    </div>
+                </div>
+                <!-- 移除了 readonly 属性，使用户可以编辑 -->
+                <textarea id="resultTextArea" class="flex-1 p-8 text-slate-800 leading-relaxed outline-none resize-none font-mono text-[13px] bg-white" placeholder="OCR结果将显示在此处..."></textarea>
+            </div>
+
+            <!-- 错误指南覆盖层 -->
+            <div id="errorOverlay" class="hidden absolute inset-0 bg-slate-900/90 z-50 flex items-center justify-center p-6 overflow-y-auto">
+                <div class="bg-white rounded-2xl max-w-2xl w-full p-8 shadow-2xl my-auto text-sm">
+                    <div class="flex items-center text-red-600 mb-6">
+                        <div class="p-3 bg-red-100 rounded-full mr-4">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+                        </div>
+                        <div>
+                            <h2 class="text-2xl font-black italic uppercase tracking-tighter">连接失败</h2>
+                            <p class="text-slate-500 uppercase font-bold">无法连接到 Ollama</p>
+                        </div>
+                    </div>
+                    <div class="space-y-4">
+                        <p class="p-3 bg-amber-50 border-l-4 border-amber-400 text-amber-800">CORS 限制已拦截通信。请检查设置：</p>
+                        <div class="grid md:grid-cols-2 gap-4">
+                            <div class="p-4 bg-slate-50 rounded-xl border border-slate-200">
+                                <h3 class="font-bold text-indigo-700 mb-2">Windows</h3>
+                                <p class="text-[11px] text-slate-600">退出 Ollama 后，在环境变量 OLLAMA_ORIGINS 中添加 * 并重启。</p>
+                            </div>
+                            <div class="p-4 bg-slate-50 rounded-xl border border-slate-200">
+                                <h3 class="font-bold text-indigo-700 mb-2">macOS</h3>
+                                <p class="text-[11px] text-slate-600">执行 launchctl setenv OLLAMA_ORIGINS "*" 后重启 Ollama。</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="mt-8 flex space-x-3">
+                        <button onclick="checkConnection()" class="flex-1 bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 transition">重试</button>
+                        <button onclick="document.getElementById('errorOverlay').classList.add('hidden')" class="px-6 bg-slate-100 text-slate-600 py-3 rounded-xl font-bold hover:bg-slate-200 transition">关闭</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const folderInput = document.getElementById('folderInput');
+        const startBtn = document.getElementById('startBtn');
+        const saveJsonBtn = document.getElementById('saveJsonBtn');
+        const mergeMdBtn = document.getElementById('mergeMdBtn');
+        const imageList = document.getElementById('imageList');
+        const statusText = document.getElementById('statusText');
+        const welcomeScreen = document.getElementById('welcomeScreen');
+        const previewImage = document.getElementById('previewImage');
+        const resultTextArea = document.getElementById('resultTextArea');
+        const currentFileName = document.getElementById('currentFileName');
+        const reOcrBtn = document.getElementById('reOcrBtn');
+        const promptInput = document.getElementById('promptInput');
+        const serverUrlInput = document.getElementById('serverUrlInput');
+        const checkConnBtn = document.getElementById('checkConnBtn');
+        const connStatus = document.getElementById('connStatus');
+        const errorOverlay = document.getElementById('errorOverlay');
+        const loadingOverlay = document.getElementById('loadingOverlay'); // 加载层
+        const copyBtn = document.getElementById('copyBtn');
+        const speakBtn = document.getElementById('speakBtn');
+        const speakBtnText = document.getElementById('speakBtnText');
+        const ttsLangSelect = document.getElementById('ttsLangSelect');
+        const ttsRateSelect = document.getElementById('ttsRateSelect');
+        const helpBtn = document.getElementById('helpBtn');
+        
+        // 侧边栏相关
+        const sidebar = document.getElementById('sidebar');
+        const hideSidebarBtn = document.getElementById('hideSidebarBtn');
+        const showSidebarBtn = document.getElementById('showSidebarBtn');
+
+        // 调整大小相关
+        const leftPane = document.getElementById('leftPane');
+        const resizer = document.getElementById('resizer');
+        const mainContent = document.getElementById('mainContent');
+
+        // 图片操作相关
+        const imageViewport = document.getElementById('imageViewport');
+        const controlsInfo = document.getElementById('imageControlsInfo');
+
+        let filesQueue = [];
+        let resultsMap = new Map();
+        const synth = window.speechSynthesis;
+        const STORAGE_KEY = 'ollama_ocr_cache';
+
+        // --- 侧边栏开关 ---
+        hideSidebarBtn.onclick = () => {
+            sidebar.classList.add('sidebar-hidden');
+            showSidebarBtn.classList.remove('hidden');
+        };
+        showSidebarBtn.onclick = () => {
+            sidebar.classList.remove('sidebar-hidden');
+            showSidebarBtn.classList.add('hidden');
+        };
+
+        // --- 分割调整大小 ---
+        let isResizing = false;
+        resizer.onmousedown = (e) => {
+            isResizing = true;
+            resizer.classList.add('active');
+            document.body.style.cursor = 'col-resize';
+        };
+
+        window.onmousemove = (e) => {
+            if (!isResizing) return;
+            const containerRect = mainContent.getBoundingClientRect();
+            let newWidth = e.clientX - containerRect.left;
+            const minWidth = 100;
+            const maxWidth = containerRect.width - 100;
+            if (newWidth < minWidth) newWidth = minWidth;
+            if (newWidth > maxWidth) newWidth = maxWidth;
+            const percentage = (newWidth / containerRect.width) * 100;
+            leftPane.style.width = `${percentage}%`;
+        };
+
+        window.onmouseup = () => {
+            if (isResizing) {
+                isResizing = false;
+                resizer.classList.remove('active');
+                document.body.style.cursor = 'default';
+            }
+        };
+
+        // --- 图片缩放/平移 ---
+        let imgState = { scale: 1, x: 0, y: 0, isDragging: false, startX: 0, startY: 0 };
+
+        function updateImageTransform() {
+            previewImage.style.transform = `translate(${imgState.x}px, ${imgState.y}px) scale(${imgState.scale})`;
+        }
+
+        imageViewport.onwheel = (e) => {
+            e.preventDefault();
+            const zoomSpeed = 0.1;
+            const delta = e.deltaY > 0 ? -zoomSpeed : zoomSpeed;
+            const newScale = Math.max(0.1, Math.min(10, imgState.scale + delta));
+            imgState.scale = newScale;
+            updateImageTransform();
+        };
+
+        imageViewport.onmousedown = (e) => {
+            if (e.button !== 0) return;
+            imgState.isDragging = true;
+            imgState.startX = e.clientX - imgState.x;
+            imgState.startY = e.clientY - imgState.y;
+        };
+
+        window.addEventListener('mousemove', (e) => {
+            if (!imgState.isDragging) return;
+            imgState.x = e.clientX - imgState.startX;
+            imgState.y = e.clientY - imgState.startY;
+            updateImageTransform();
+        });
+
+        window.addEventListener('mouseup', () => {
+            imgState.isDragging = false;
+        });
+
+        function resetImageState() {
+            imgState = { scale: 1, x: 0, y: 0, isDragging: false, startX: 0, startY: 0 };
+            previewImage.style.maxWidth = '100%';
+            previewImage.style.maxHeight = '100%';
+            previewImage.style.width = 'auto';
+            previewImage.style.height = 'auto';
+            updateImageTransform();
+        }
+
+        // --- 数据存储机制 ---
+
+        function saveToLocalStorage() {
+            const data = Array.from(resultsMap.entries()).map(([name, text]) => ({ img: name, ocrtext: text }));
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+        }
+
+        function loadFromLocalStorage() {
+            const saved = localStorage.getItem(STORAGE_KEY);
+            if (saved) {
+                try {
+                    const data = JSON.parse(saved);
+                    data.forEach(item => resultsMap.set(item.img, item.ocrtext));
+                } catch (e) { console.error("Cache load failed", e); }
+            }
+        }
+
+        // --- 编辑自动更新 ---
+        resultTextArea.oninput = () => {
+            const fileName = currentFileName.innerText;
+            if (fileName && fileName !== "Filename.jpg") {
+                resultsMap.set(fileName, resultTextArea.value);
+                saveToLocalStorage();
+                const items = Array.from(imageList.children);
+                const currentItem = items.find(item => item.querySelector('p').innerText === fileName);
+                if (currentItem) {
+                    const statusLabel = currentItem.querySelector('.status-label');
+                    statusLabel.innerText = "LOADED";
+                    statusLabel.className = "text-[8px] status-label font-bold uppercase text-green-600";
+                }
+                checkBatchComplete();
+            }
+        };
+
+        // --- OCR & Ollama 处理 ---
+        helpBtn.onclick = () => errorOverlay.classList.remove('hidden');
+
+        async function checkConnection(showError = true) {
+            const baseUrl = serverUrlInput.value.trim().replace(/\/$/, "");
+            connStatus.innerText = "PINGING...";
+            connStatus.className = "text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-600 font-bold";
+            try {
+                const response = await fetch(`${baseUrl}/api/tags`, { method: 'GET', mode: 'cors', signal: AbortSignal.timeout(3000) });
+                if (response.ok) {
+                    connStatus.innerText = "ONLINE";
+                    connStatus.className = "text-[10px] px-1.5 py-0.5 rounded bg-green-500 text-white font-bold";
+                    errorOverlay.classList.add('hidden');
+                    return true;
+                }
+            } catch (err) {}
+            connStatus.innerText = "OFFLINE";
+            connStatus.className = "text-[10px] px-1.5 py-0.5 rounded bg-red-500 text-white font-bold";
+            if (showError) errorOverlay.classList.remove('hidden');
+            return false;
+        }
+
+        checkConnBtn.onclick = () => checkConnection();
+
+        folderInput.addEventListener('change', async (e) => {
+            const allFiles = Array.from(e.target.files);
+            const jsonFile = allFiles.find(f => f.name.toLowerCase().endsWith('.json'));
+            if (jsonFile) {
+                const text = await jsonFile.text();
+                try {
+                    const data = JSON.parse(text);
+                    if (Array.isArray(data)) {
+                        data.forEach(item => {
+                            if (item.img && item.ocrtext) resultsMap.set(item.img, item.ocrtext);
+                        });
+                    }
+                } catch (err) { console.error("JSON parse error", err); }
+            }
+            const files = allFiles
+                .filter(file => /\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(file.name))
+                .sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric: true, sensitivity: 'base'}));
+            if (files.length === 0) return;
+            filesQueue = files;
+            renderList();
+            statusText.innerText = `加载了 ${files.length} 张图片`;
+            checkBatchComplete();
+        });
+
+        function renderList() {
+            imageList.innerHTML = '';
+            filesQueue.forEach((file, index) => {
+                const item = document.createElement('div');
+                item.className = "p-2 bg-white border border-slate-200 rounded-xl cursor-pointer hover:border-indigo-400 transition flex items-center space-x-3 shadow-sm";
+                item.id = `item-${index}`;
+                const thumb = document.createElement('img');
+                thumb.src = URL.createObjectURL(file);
+                thumb.className = "w-10 h-10 object-cover rounded-md flex-shrink-0";
+                const hasResult = resultsMap.has(file.name);
+                const info = document.createElement('div');
+                info.className = "flex-1 min-w-0";
+                info.innerHTML = `
+                    <p class="text-[10px] font-bold truncate text-slate-700">${file.name}</p>
+                    <p class="text-[8px] status-label font-bold uppercase ${hasResult ? 'text-green-600' : 'text-slate-400'}">
+                        ${hasResult ? 'LOADED' : 'Pending'}
+                    </p>
+                `;
+                item.appendChild(thumb);
+                item.appendChild(info);
+                item.onclick = () => showResult(file.name, thumb.src);
+                imageList.appendChild(item);
+            });
+        }
+
+        function showResult(fileName, imgSrc) {
+            welcomeScreen.classList.add('hidden');
+            previewImage.classList.remove('hidden');
+            controlsInfo.classList.remove('hidden');
+            previewImage.src = imgSrc;
+            currentFileName.innerText = fileName;
+            resultTextArea.value = resultsMap.get(fileName) || "尚未处理此图片。";
+            reOcrBtn.classList.remove('hidden'); // 显示重新 OCR 按钮
+            
+            previewImage.onload = () => {
+                resetImageState();
+                previewImage.style.maxWidth = '100%';
+                previewImage.style.maxHeight = '100%';
+            };
+            stopSpeaking();
+        }
+
+        function checkBatchComplete() {
+            const allDone = filesQueue.length > 0 && filesQueue.every(f => resultsMap.has(f.name));
+            if (allDone) {
+                saveJsonBtn.classList.remove('hidden');
+                mergeMdBtn.classList.remove('hidden');
+            } else {
+                saveJsonBtn.classList.add('hidden');
+                mergeMdBtn.classList.add('hidden');
+            }
+        }
+
+        // 重新 OCR 当前图片
+        reOcrBtn.onclick = async () => {
+            const fileName = currentFileName.innerText;
+            const fileIndex = filesQueue.findIndex(f => f.name === fileName);
+            if (fileIndex === -1) return;
+
+            const isConnected = await checkConnection(true);
+            if (!isConnected) return;
+
+            // 显示加载弹窗
+            loadingOverlay.classList.remove('hidden');
+            reOcrBtn.disabled = true;
+
+            const item = document.getElementById(`item-${fileIndex}`);
+            const statusLabel = item.querySelector('.status-label');
+            const file = filesQueue[fileIndex];
+
+            statusText.innerText = `重新处理: ${fileName}`;
+            try {
+                const base64 = await fileToBase64(file);
+                const text = await callOllamaWithRetry(base64, promptInput.value, (msg) => {
+                    statusLabel.innerText = msg;
+                    item.classList.add('retrying');
+                });
+                item.classList.remove('retrying');
+                resultsMap.set(file.name, text);
+                saveToLocalStorage();
+                statusLabel.innerText = "SUCCESS";
+                statusLabel.className = "text-[8px] text-green-600 status-label font-bold";
+                resultTextArea.value = text;
+            } catch (err) {
+                item.classList.remove('retrying');
+                statusLabel.innerText = "ERROR";
+                statusLabel.className = "text-[8px] text-red-600 status-label font-bold";
+            } finally {
+                // 隐藏加载弹窗
+                loadingOverlay.classList.add('hidden');
+                reOcrBtn.disabled = false;
+                statusText.innerText = "单体处理完成";
+                checkBatchComplete();
+            }
+        };
+
+        startBtn.onclick = async () => {
+            if (filesQueue.length === 0) return;
+            if (!await checkConnection(true)) return;
+            startBtn.disabled = true;
+            const prompt = promptInput.value;
+            for (let i = 0; i < filesQueue.length; i++) {
+                const file = filesQueue[i];
+                if (resultsMap.has(file.name)) continue;
+                const item = document.getElementById(`item-${i}`);
+                const statusLabel = item.querySelector('.status-label');
+                statusText.innerText = `处理中 ${i+1}/${filesQueue.length}`;
+                item.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                try {
+                    const base64 = await fileToBase64(file);
+                    const text = await callOllamaWithRetry(base64, prompt, (msg) => {
+                        statusLabel.innerText = msg;
+                        item.classList.add('retrying');
+                    });
+                    item.classList.remove('retrying');
+                    resultsMap.set(file.name, text);
+                    saveToLocalStorage();
+                    statusLabel.innerText = "SUCCESS";
+                    statusLabel.className = "text-[8px] text-green-600 status-label font-bold";
+                    if (currentFileName.innerText === file.name) resultTextArea.value = text;
+                } catch (err) {
+                    item.classList.remove('retrying');
+                    statusLabel.innerText = "ERROR";
+                    statusLabel.className = "text-[8px] text-red-600 status-label font-bold";
+                }
+            }
+            statusText.innerText = "处理完成";
+            startBtn.disabled = false;
+            checkBatchComplete();
+        };
+
+        // 保存本地 (JSON)
+        saveJsonBtn.onclick = () => {
+            const data = filesQueue.map(f => ({
+                img: f.name,
+                ocrtext: resultsMap.get(f.name) || ""
+            }));
+            const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'ocr_results.json';
+            a.click();
+            URL.revokeObjectURL(url);
+        };
+
+        // 合并导出 MD (不包含图片名)
+        mergeMdBtn.onclick = () => {
+            const combinedContent = filesQueue.map(f => {
+                return resultsMap.get(f.name) || "";
+            }).join('\n\n---\n\n');
+            const blob = new Blob([combinedContent], { type: 'text/markdown' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'ocr_combined_results.md';
+            a.click();
+            URL.revokeObjectURL(url);
+        };
+
+        function stopSpeaking() {
+            if (synth.speaking) synth.cancel();
+            speakBtnText.innerText = "朗读";
+            speakBtn.className = speakBtn.className.replace('bg-red-50 text-red-600', 'bg-emerald-50 text-emerald-600');
+        }
+
+        speakBtn.onclick = () => {
+            if (synth.speaking) { stopSpeaking(); return; }
+            const text = resultTextArea.value;
+            if (!text || text.startsWith("尚未处理") || text.startsWith("尚未处理此图片")) return;
+            const utterance = new SpeechSynthesisUtterance(text);
+            utterance.lang = ttsLangSelect.value;
+            utterance.rate = parseFloat(ttsRateSelect.value);
+            utterance.onstart = () => {
+                speakBtnText.innerText = "停止";
+                speakBtn.className = speakBtn.className.replace('bg-emerald-50 text-emerald-600', 'bg-red-50 text-red-600');
+            };
+            utterance.onend = stopSpeaking;
+            synth.speak(utterance);
+        };
+
+        async function callOllamaWithRetry(base64Image, prompt, onRetry) {
+            const maxRetries = 3;
+            for (let attempt = 0; attempt <= maxRetries; attempt++) {
+                try {
+                    return await callOllamaOCR(base64Image, prompt);
+                } catch (err) {
+                    if (attempt === maxRetries) throw err;
+                    onRetry(`RETRY (${attempt+1})`);
+                    await new Promise(r => setTimeout(r, 1500 * (attempt + 1)));
+                }
+            }
+        }
+
+        async function callOllamaOCR(base64Image, prompt) {
+            const baseUrl = serverUrlInput.value.trim().replace(/\/$/, "");
+            const response = await fetch(`${baseUrl}/api/chat`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                mode: 'cors',
+                body: JSON.stringify({
+                    model: 'qwen3-vl', 
+                    messages: [{ role: 'user', content: prompt, images: [base64Image] }],
+                    stream: false
+                })
+            });
+            const data = await response.json();
+            return data.message.content;
+        }
+
+        function fileToBase64(file) {
+            return new Promise((resolve) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result.split(',')[1]);
+                reader.readAsDataURL(file);
+            });
+        }
+
+        copyBtn.onclick = () => {
+            resultTextArea.select();
+            document.execCommand('copy');
+            const old = copyBtn.innerText;
+            copyBtn.innerText = "OK!";
+            setTimeout(() => copyBtn.innerText = old, 2000);
+        };
+
+        window.onload = () => {
+            loadFromLocalStorage();
+            checkConnection(false);
+        };
+    </script>
+</body>
+</html>
