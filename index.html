@@ -102,7 +102,7 @@
                 
                 <div>
                     <label class="block text-[10px] font-bold text-slate-500 uppercase mb-1">指示 (Prompt)</label>
-                    <input type="text" id="promptInput" value="图片为日文资料，提取图片中的所有文字，使用Markdown格式输出。" 
+                    <input type="text" id="promptInput" value="提取图片中的所有文字，保持排版，使用Markdown格式输出。" 
                            class="w-full px-3 py-2 text-sm border border-slate-300 rounded-md focus:ring-2 focus:ring-indigo-500 outline-none">
                 </div>
 
@@ -191,11 +191,21 @@
                         <button id="reOcrBtn" class="text-[10px] font-bold text-amber-600 bg-amber-50 px-2 py-1 rounded border border-amber-100 hover:bg-amber-100 transition shrink-0 hidden">重新OCR</button>
                     </div>
                     <div class="flex items-center space-x-2 flex-shrink-0">
-                        <button id="speakBtn" class="flex items-center text-[11px] font-black uppercase tracking-widest text-emerald-600 bg-emerald-50 px-4 py-2 rounded-lg hover:bg-emerald-100 transition border border-emerald-100">
+                        <!-- 上一页按钮 -->
+                        <button id="prevBtn" class="text-[11px] font-black uppercase tracking-widest text-slate-600 bg-slate-50 px-3 py-2 rounded-lg hover:bg-slate-100 transition border border-slate-100">
+                            上一页
+                        </button>
+                        <!-- 下一页按钮 -->
+                        <button id="nextBtn" class="text-[11px] font-black uppercase tracking-widest text-slate-600 bg-slate-50 px-3 py-2 rounded-lg hover:bg-slate-100 transition border border-slate-100">
+                            下一页
+                        </button>
+                        <!-- 朗读按钮 -->
+                        <button id="speakBtn" class="flex items-center text-[11px] font-black uppercase tracking-widest text-emerald-600 bg-emerald-50 px-3 py-2 rounded-lg hover:bg-emerald-100 transition border border-emerald-100">
                             <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3 mr-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" /></svg>
                             <span id="speakBtnText" class="hidden sm:inline">朗读</span>
                         </button>
-                        <button id="copyBtn" class="text-[11px] font-black uppercase tracking-widest text-indigo-600 bg-indigo-50 px-4 py-2 rounded-lg hover:bg-indigo-100 transition border border-indigo-100">
+                        <!-- 复制按钮 -->
+                        <button id="copyBtn" class="text-[11px] font-black uppercase tracking-widest text-indigo-600 bg-indigo-50 px-3 py-2 rounded-lg hover:bg-indigo-100 transition border border-indigo-100">
                             <span class="hidden sm:inline">复制</span><span class="sm:hidden">COPY</span>
                         </button>
                     </div>
@@ -251,6 +261,8 @@
         const resultTextArea = document.getElementById('resultTextArea');
         const currentFileName = document.getElementById('currentFileName');
         const reOcrBtn = document.getElementById('reOcrBtn');
+        const prevBtn = document.getElementById('prevBtn');
+        const nextBtn = document.getElementById('nextBtn');
         const promptInput = document.getElementById('promptInput');
         const serverUrlInput = document.getElementById('serverUrlInput');
         const checkConnBtn = document.getElementById('checkConnBtn');
@@ -388,6 +400,23 @@
             mergeMdBtn.classList.toggle('hidden', !done);
         }
 
+        // --- Navigation Logic ---
+        function navigate(step) {
+            const name = currentFileName.innerText;
+            const idx = filesQueue.findIndex(f => f.name === name);
+            if (idx === -1) return;
+            const newIdx = idx + step;
+            if (newIdx >= 0 && newIdx < filesQueue.length) {
+                const targetFile = filesQueue[newIdx];
+                const targetItem = document.getElementById(`item-${newIdx}`);
+                const src = targetItem.querySelector('img').src;
+                showResult(targetFile.name, src);
+                targetItem.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            }
+        }
+        prevBtn.onclick = () => navigate(-1);
+        nextBtn.onclick = () => navigate(1);
+
         // --- CORE SEQUENTIAL PROCESSING ---
         startBtn.onclick = async () => {
             if (filesQueue.length === 0 || isProcessing) return;
@@ -397,10 +426,9 @@
             startBtn.disabled = true;
             reOcrBtn.disabled = true;
 
-            // 循环中的 await 确保一张一张按顺序处理
             for (let i = 0; i < filesQueue.length; i++) {
                 const file = filesQueue[i];
-                if (resultsMap.has(file.name)) continue; // 已经处理过的跳过
+                if (resultsMap.has(file.name)) continue;
 
                 const item = document.getElementById(`item-${i}`);
                 const lbl = item.querySelector('.status-label');
@@ -409,7 +437,6 @@
 
                 try {
                     const b64 = await fileToBase64(file);
-                    // 等待当前图片的 OCR 完成
                     const text = await callOllamaWithRetry(b64, promptInput.value, (msg) => {
                         lbl.innerText = msg;
                         item.classList.add('retrying');
